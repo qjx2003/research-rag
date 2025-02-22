@@ -1,87 +1,103 @@
-import fitz  # PyMuPDF for handling PDFs
-import openai
-import faiss
-import numpy as np
-import json
-import os
-from flask import Flask, request, jsonify
 
+import os
+import openai
+import fitz  # PyMuPDF for PDF highlighting
+from flask import Flask, request, jsonify, send_file
+
+# Set OpenAI API Key
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-def load_pdf(pdf_path):
-    """Extract text from a PDF file."""
-    try:
-        doc = fitz.open(pdf_path)
-        text = "".join([page.get_text("text") for page in doc])
-        doc.close()
-        return text
-    except Exception as e:
-        print(f"Error loading PDF: {e}")
-        return ""
-
-def generate_embeddings(text):
-    """Use OpenAI API to generate text embeddings."""
-    response = openai.Embedding.create(
-        input=[text],
-        model="text-embedding-ada-002"
-    )
-    return np.array(response['data'][0]['embedding']).reshape(1, -1)
-
-def store_embeddings(embeddings, texts):
-    """Store embeddings in FAISS vector database."""
-    dim = embeddings.shape[1]
-    index = faiss.IndexFlatL2(dim)
-    index.add(embeddings)
-
-    # Save the index and texts
-    faiss.write_index(index, "vector.index")
-    with open("texts.json", "w") as f:
-        json.dump(texts, f)
-
-def process_pdf(pdf_path):
-    """Extract and store embeddings."""
-    text = load_pdf(pdf_path)
-    embeddings = generate_embeddings(text)
-    store_embeddings(embeddings, [text])
-
-def query_vector_db(query_text):
-    """Find relevant text sections using FAISS."""
-    index = faiss.read_index("vector.index")
-    with open("texts.json", "r") as f:
-        texts = json.load(f)
-
-    query_embedding = generate_embeddings(query_text)
-    D, I = index.search(query_embedding, 1)
-    return texts[I[0][0]]
-
-def highlight_pdf(pdf_path, text_to_highlight):
-    """Highlight occurrences of text in the PDF."""
-    doc = fitz.open(pdf_path)
-    for page in doc:
-        for inst in page.search_for(text_to_highlight):
-            page.add_highlight_annot(inst)
-    highlighted_pdf_path = "highlighted_output.pdf"
-    doc.save(highlighted_pdf_path)
-    doc.close()
-    return highlighted_pdf_path
-
+# Initialize Flask app
 app = Flask(__name__)
 
+# -------------------- 1️ Upload PDF and Store in OpenAI File Search API --------------------
 @app.route('/upload', methods=['POST'])
 def upload_pdf():
-    pdf_path = request.json.get("pdf_path")
-    if not pdf_path:
-        return jsonify({"error": "PDF path is required"}), 400
-    process_pdf(pdf_path)
-    return jsonify({"message": "PDF processed and stored in database."})
+    """Uploads a PDF to OpenAI File Search API."""
+    pdf_file = request.files.get("file")
+    
+    if not pdf_file:
+        return jsonify({"error": "No file uploaded"}), 400
 
+    # Save temporarily
+    pdf_path = f"uploads/{pdf_file.filename}"
+    pdf_file.save(pdf_path)
+
+    # Upload file to OpenAI File Search API
+    with open(pdf_path, "rb") as f:
+        response = openai.File.create(file=f, purpose="answers")
+
+    file_id = response["id"]
+    return jsonify({"message": "PDF uploaded successfully", "file_id": file_id})
+
+# -------------------- 2️ User Query Processing --------------------
 @app.route('/query', methods=['POST'])
-def search_text():
-    query_text = request.json.get("query")
-    if not query_text:
-        return jsonify({"error": "Query text is required"}), 400
-    result = query_vector_db(query_text)
-    return jsonify({"result": result})
+def process_query():
+    """Handles user query, retrieves relevant sections, generates GPT-4 response, and highlights text."""
+    data = request.json
+    query = data.get("query")
+    file_id = data.get("file_id")
+    pdf_path = data.get("pdf_path")  # Path to original PDF
+    
+    if not query or not file_id or not pdf_path:
+        return jsonify({"error": "Query, file_id, and pdf_path are required"}), 400
 
+    # 3️ Convert Query to Embedding
+    query_embedding = openai.Embedding.create(
+        input=[query],
+        model="text-embedding-ada-002"
+    )["data"][0]["embedding"]
+
+    # 4️ Retrieve Relevant Sections
+    search_response = openai.FileSearch.search(
+        file_id=file_id,
+        query_embedding=query_embedding
+    )
+
+    retrieved_text = search_response["data"][0]["text"]
+
+    # 5️ Generate GPT-4 Response
+    gpt_response = openai.ChatCompletion.create(
+        model="gpt-4",
+        messages=[{"role": "user", "content": retrieved_text}]
+    )["choices"][0]["message"]["content"]
+
+    # Highlight Retrieved Text in PDF
+    highlighted_pdf = highlight_text_in_pdf(pdf_path, retrieved_text)
+
+    return jsonify({
+        "gpt_response": gpt_response,
+        "highlighted_pdf": highlighted_pdf
+    })
+
+# -------------------- 6️ Function to Highlight Text in PDF --------------------
+def highlight_text_in_pdf(pdf_path, text_to_highlight):
+    """Highlights retrieved text in the given PDF."""
+    doc = fitz.open(pdf_path)
+    found = False
+
+    for page in doc:
+        instances = page.search_for(text_to_highlight)
+        if instances:
+            found = True
+            for inst in instances:
+                page.add_highlight_annot(inst)
+
+    if found:
+        highlighted_pdf_path = "highlighted_output.pdf"
+        doc.save(highlighted_pdf_path)
+        doc.close()
+        return highlighted_pdf_path
+    else:
+        doc.close()
+        return None  # No matching text found
+
+# -------------------- 7️ Serve the Highlighted PDF --------------------
+@app.route('/get_highlighted_pdf', methods=['GET'])
+def get_highlighted_pdf():
+    """Returns the highlighted PDF for frontend display."""
+    return send_file("highlighted_output.pdf", as_attachment=False)
+
+# -------------------- 8️ Run Flask App --------------------
 if __name__ == '__main__':
     app.run(debug=True)

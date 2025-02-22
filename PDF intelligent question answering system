@@ -3,32 +3,36 @@ import openai
 import faiss
 import numpy as np
 import json
+import os
+from flask import Flask, request, jsonify
 
-openai.api_key = "your_openai_api_key"
+openai.api_key = os.getenv("OPENAI_API_KEY")
 
 def load_pdf(pdf_path):
     """Extract text from a PDF file."""
-    doc = fitz.open(pdf_path)
-    text = ""
-    for page in doc:
-        text += page.get_text("text") + "\n"
-    doc.close()
-    return text
+    try:
+        doc = fitz.open(pdf_path)
+        text = "".join([page.get_text("text") for page in doc])
+        doc.close()
+        return text
+    except Exception as e:
+        print(f"Error loading PDF: {e}")
+        return ""
 
 def generate_embeddings(text):
     """Use OpenAI API to generate text embeddings."""
     response = openai.Embedding.create(
-        input=text,
+        input=[text],
         model="text-embedding-ada-002"
     )
-    return np.array(response['data'][0]['embedding'])
+    return np.array(response['data'][0]['embedding']).reshape(1, -1)
 
 def store_embeddings(embeddings, texts):
     """Store embeddings in FAISS vector database."""
     dim = embeddings.shape[1]
     index = faiss.IndexFlatL2(dim)
     index.add(embeddings)
-    
+
     # Save the index and texts
     faiss.write_index(index, "vector.index")
     with open("texts.json", "w") as f:
@@ -37,66 +41,47 @@ def store_embeddings(embeddings, texts):
 def process_pdf(pdf_path):
     """Extract and store embeddings."""
     text = load_pdf(pdf_path)
-    embeddings = np.array([generate_embeddings(text)])  # Convert to NumPy array
+    embeddings = generate_embeddings(text)
     store_embeddings(embeddings, [text])
 
-
-#
 def query_vector_db(query_text):
     """Find relevant text sections using FAISS."""
-    # Load FAISS index
     index = faiss.read_index("vector.index")
-    
-    # Load stored texts
     with open("texts.json", "r") as f:
         texts = json.load(f)
-    
-    # Get query embedding
-    query_embedding = np.array([generate_embeddings(query_text)])
-    
-    # Perform search
-    D, I = index.search(query_embedding, 1)  # Get the closest match
-    
+
+    query_embedding = generate_embeddings(query_text)
+    D, I = index.search(query_embedding, 1)
     return texts[I[0][0]]
 
-from flask import Flask, request, jsonify
+def highlight_pdf(pdf_path, text_to_highlight):
+    """Highlight occurrences of text in the PDF."""
+    doc = fitz.open(pdf_path)
+    for page in doc:
+        for inst in page.search_for(text_to_highlight):
+            page.add_highlight_annot(inst)
+    highlighted_pdf_path = "highlighted_output.pdf"
+    doc.save(highlighted_pdf_path)
+    doc.close()
+    return highlighted_pdf_path
 
 app = Flask(__name__)
 
 @app.route('/upload', methods=['POST'])
 def upload_pdf():
-    """Upload and process a PDF file."""
     pdf_path = request.json.get("pdf_path")
     if not pdf_path:
         return jsonify({"error": "PDF path is required"}), 400
-    
     process_pdf(pdf_path)
     return jsonify({"message": "PDF processed and stored in database."})
 
 @app.route('/query', methods=['POST'])
 def search_text():
-    """Search for relevant text."""
     query_text = request.json.get("query")
     if not query_text:
         return jsonify({"error": "Query text is required"}), 400
-    
     result = query_vector_db(query_text)
     return jsonify({"result": result})
 
 if __name__ == '__main__':
     app.run(debug=True)
-
-
-def highlight_pdf(pdf_path, text_to_highlight):
-    """Highlight occurrences of text in the PDF."""
-    doc = fitz.open(pdf_path)
-    
-    for page in doc:
-        text_instances = page.search_for(text_to_highlight)
-        for inst in text_instances:
-            page.add_highlight_annot(inst)  # Highlight found text
-    
-    highlighted_pdf_path = "highlighted_output.pdf"
-    doc.save(highlighted_pdf_path)
-    doc.close()
-    return highlighted_pdf_path

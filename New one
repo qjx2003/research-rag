@@ -11,8 +11,6 @@ class PDFRAG:
         and set up the vector store.
         """
         self.key = os.getenv("OPENAI_API_KEY")
-
-
         self.pdf_path = pdf_path
 
         #Assumes OPENAI_API_KEY is set as an environment variable.
@@ -122,44 +120,44 @@ class PDFRAG:
                     json.dump(highlight_data, json_file, indent=4)
             else:
                 print(" No highlights were found in the document.")
+
     def highlight_text_in_pdf(self, pdf_path, text_to_highlight):
-        """
-        Highlights retrieved text in the given PDF and returns JSON data for frontend rendering.
-        """
+        """Highlights entire paragraphs that contain retrieved text instead of individual words."""
         doc = fitz.open(pdf_path)
         highlights = []
-
+    
         for page_num, page in enumerate(doc):
-            words = text_to_highlight.split()  
-            found = False 
+            text = page.get_text("text")
+            # Splitting text into paragraphs based on double newlines
+            paragraphs = text.split("\n\n")  
 
-            for word in words:
-                instances = page.search_for(word)
+            # Find the paragraph with the highest overlap
+            best_match = None
+            max_overlap = 0
+            for para in paragraphs:
+                overlap = len(set(text_to_highlight.split()) & set(para.split()))
+                if overlap > max_overlap:
+                    max_overlap = overlap
+                    best_match = para
 
-                if instances:
-                    found = True  
-                    for inst in instances:
-                        try:
-                            page.add_highlight_annot(inst)
-                        except Exception as e:
-                            print(f"⚠️ Warning: Failed to highlight text on page {page_num + 1}. Using rectangle annotation instead.")
-                            page.draw_rect(inst, color=(1, 1, 0), width=2) 
-
-                        highlights.append({"page": page_num + 1, "bbox": list(inst)})
-
-            if not found:
-                print(f"⚠️ Warning: No matches found for the given text on page {page_num + 1}")
+            # Highlight the best matching paragraph
+            if best_match:
+                # Search for the paragraph in the page
+                instances = page.search_for(best_match.strip())  
+                for inst in instances:
+                    page.add_highlight_annot(inst)
+                    highlights.append({"page": page_num + 1, "bbox": list(inst)})
 
         if highlights:
             highlighted_pdf_path = "highlighted_output.pdf"
             doc.save(highlighted_pdf_path)
             doc.close()
-            print(f" Highlighted PDF saved as {highlighted_pdf_path}")
             return {"highlighted_pdf": highlighted_pdf_path, "highlights": highlights}
         else:
             doc.close()
-            print(" No highlights were found in the document.")
-            return None  # No matching text found
+            # No matching text found
+            return None  
+
 
 
 if __name__ == "__main__":

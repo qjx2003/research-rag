@@ -96,52 +96,16 @@ class PDFRAG:
             annotations = message_content.annotations 
             print(message_content.value)
 
+            ## TODO
+            #print out the cited text here. 
+            #or print the page number of cited texts
+    
+
             #print(annotations)
             
 
             with open("annotations.txt", "w", encoding="utf-8") as f:
                 f.write(str(annotations))
-
-            #-----------------------------------------------------------          
-        # thread = self.client.beta.threads.create(
-        #     messages=[
-        #         {
-        #             "role": "user",
-        #             "content": query
-        #         }
-        #     ]
-        # )
-        # print(f"Your thread id is - {thread.id}\n\n")
-
-        # run = self.client.beta.threads.runs.create_and_poll(
-        #     thread_id=thread.id, 
-        #     assistant_id=self.assistant.id
-        # )
-        
-        # messages = list(self.client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
-        
-        # message_content = messages[0].content[0].text
-        # annotations = message_content.annotations 
-
-        # citations = []
-        # for index, annotation in enumerate(annotations):
-        #     message_content.value = message_content.value.replace(annotation.text, f"[{index}]")
-        #     if file_citation := getattr(annotation, "file_citation", None):
-        #         cited_file = self.client.files.retrieve(file_citation.file_id)
-        #         #not sure if this one will work. 
-        #         quote_text = file_citation.get("quote", "")
-            
-        #         citation_info = f"[{index}] {cited_file.filename}"
-        #         citation_info += f"\nQuote: \"{quote_text}\""  
-        #         citations.append(citation_info)
-        
-        # print("Assistant Response:")
-        # print(message_content.value)
-
-        # print("\nCitations:")
-        # print("\n".join(citations))
-
-        # return citations
     
 if __name__ == "__main__":
     

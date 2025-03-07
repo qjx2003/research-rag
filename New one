@@ -1,0 +1,177 @@
+from openai import OpenAI
+import os
+import fitz  # PyMuPDF for PDF highlighting
+import json
+
+
+class PDFRAG:
+    def __init__(self, pdf_path):
+        """
+        Initialize OpenAI API, create a file search assistant,
+        and set up the vector store.
+        """
+        self.key = os.getenv("OPENAI_API_KEY")
+
+
+        self.pdf_path = pdf_path
+
+        #Assumes OPENAI_API_KEY is set as an environment variable.
+        self.client = OpenAI(api_key=self.key)
+
+        description = """"""
+        instructions  = """"""
+        # Create an assistant with file search enabled
+        self.assistant = self.client.beta.assistants.create(
+            name="PDF RAG Assistant",
+            description=description,
+            instructions=instructions,
+            model="gpt-4o-mini",
+            tools=[{"type": "file_search"}], 
+        )
+
+        #Vector Store
+        self.vector_store = self.client.beta.vector_stores.create(name="PDF_Vector_Store")
+        print("Initialization is done")
+
+        
+
+    def upload_pdf(self):
+        """
+        Upload the PDF file to the vector store and associate it with the assistant.
+        """
+        print("Uploading PDF...")
+        file_streams = [open(path, "rb") for path in self.pdf_path]
+        file_batch = self.client.beta.vector_stores.file_batches.upload_and_poll(
+            vector_store_id=self.vector_store.id, 
+            files=file_streams
+        )
+        print(file_batch.status)
+        print(file_batch.file_counts)
+
+        #update the vectore store
+        #a weird update step in here, but this is the workflow provided by OpenAI
+        self.assistant = self.client.beta.assistants.update(
+            assistant_id=self.assistant.id,
+            tool_resources={"file_search": {"vector_store_ids": [self.vector_store.id]}},
+        )
+        print("Assistant Updated with vector store!")
+
+        
+
+
+    def delete_vector_store(self):
+        """
+        Deletes the existing Vector Store.
+        """
+        if self.vector_store:
+            self.client.beta.vector_stores.delete(self.vector_store.id)
+            self.vector_store = None
+    
+    def running(self):
+        """
+        Create a run, process user queries, and highlight retrieved content.
+        """
+        thread = self.client.beta.threads.create()
+        print(f"Your thread id is: {thread.id}\n\n")
+
+        while True:
+            query = input("What's your question? (or type 'q' to quit)\n")
+
+            if query.lower() == "q":
+                print("Exiting program.")
+                break
+
+            #  Send user query to OpenAI Assistant
+            self.client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=query
+            )
+
+            print("\nRunning query...")
+            run = self.client.beta.threads.runs.create_and_poll(
+                thread_id=thread.id,
+                assistant_id=self.assistant.id
+            )
+
+            # Get Assistant's response
+            messages = list(self.client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
+
+            if not messages or not messages[0].content:
+                print(" No response received from Assistant.")
+                continue
+
+            message_content = messages[0].content[0].text
+            annotations = message_content.annotations
+            extracted_text = message_content.value  #  Extracted text for highlighting
+
+            # Avoid duplicate printing of extracted content
+            print(f"Assistant retrieved text from PDF:\n{extracted_text}\n")
+
+            # Check for file citations (Assistant-retrieved PDF content)
+            for annotation in annotations:
+                if hasattr(annotation, "file_citation"):
+                    print(f" Assistant retrieved content from a file citation.")
+
+            #  Highlight extracted text in PDF
+            highlight_data = self.highlight_text_in_pdf(self.pdf_path[0], extracted_text)
+
+            if highlight_data:
+                print(" Highlighted PDF saved successfully.")
+                with open("highlight_data.json", "w", encoding="utf-8") as json_file:
+                    json.dump(highlight_data, json_file, indent=4)
+            else:
+                print(" No highlights were found in the document.")
+    def highlight_text_in_pdf(self, pdf_path, text_to_highlight):
+        """
+        Highlights retrieved text in the given PDF and returns JSON data for frontend rendering.
+        """
+        doc = fitz.open(pdf_path)
+        highlights = []
+
+        for page_num, page in enumerate(doc):
+            words = text_to_highlight.split()  
+            found = False 
+
+            for word in words:
+                instances = page.search_for(word)
+
+                if instances:
+                    found = True  
+                    for inst in instances:
+                        try:
+                            page.add_highlight_annot(inst)
+                        except Exception as e:
+                            print(f"⚠️ Warning: Failed to highlight text on page {page_num + 1}. Using rectangle annotation instead.")
+                            page.draw_rect(inst, color=(1, 1, 0), width=2) 
+
+                        highlights.append({"page": page_num + 1, "bbox": list(inst)})
+
+            if not found:
+                print(f"⚠️ Warning: No matches found for the given text on page {page_num + 1}")
+
+        if highlights:
+            highlighted_pdf_path = "highlighted_output.pdf"
+            doc.save(highlighted_pdf_path)
+            doc.close()
+            print(f" Highlighted PDF saved as {highlighted_pdf_path}")
+            return {"highlighted_pdf": highlighted_pdf_path, "highlights": highlights}
+        else:
+            doc.close()
+            print(" No highlights were found in the document.")
+            return None  # No matching text found
+
+
+if __name__ == "__main__":
+    
+    pdf_path = [os.path.join(os.getcwd(),"final report.pdf")] 
+    print(pdf_path[0])
+    rag = PDFRAG(pdf_path)
+
+    
+    rag.upload_pdf()
+
+    response = rag.running()
+    
+    rag.delete_vector_store()  
+    

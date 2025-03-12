@@ -1,8 +1,16 @@
+#for document processing
 from openai import OpenAI
+#The file path management for PDFs
 import os
-import fitz  # PyMuPDF for PDF highlighting
+# PyMuPDF for PDF highlighting
+import fitz  
+#saving highlight results
 import json
-
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+#String matching of similar text
+from rapidfuzz import fuzz
 
 class PDFRAG:
     def __init__(self, pdf_path):
@@ -11,14 +19,15 @@ class PDFRAG:
         and set up the vector store.
         """
         self.key = os.getenv("OPENAI_API_KEY")
+
         self.pdf_path = pdf_path
 
-        #Assumes OPENAI_API_KEY is set as an environment variable.
+        # Assume that OPENAI_API_KEY has been set as an environment variable.
         self.client = OpenAI(api_key=self.key)
 
         description = """"""
         instructions  = """"""
-        # Create an assistant with file search enabled
+        # Create an assistant that enables file search
         self.assistant = self.client.beta.assistants.create(
             name="PDF RAG Assistant",
             description=description,
@@ -55,8 +64,6 @@ class PDFRAG:
         print("Assistant Updated with vector store!")
 
         
-
-
     def delete_vector_store(self):
         """
         Deletes the existing Vector Store.
@@ -65,9 +72,10 @@ class PDFRAG:
             self.client.beta.vector_stores.delete(self.vector_store.id)
             self.vector_store = None
     
+
     def running(self):
         """
-        Create a run, process user queries, and highlight retrieved content.
+        Create a run, process user queries, and highlight the best matching paragraph.
         """
         thread = self.client.beta.threads.create()
         print(f"Your thread id is: {thread.id}\n\n")
@@ -79,7 +87,6 @@ class PDFRAG:
                 print("Exiting program.")
                 break
 
-            #  Send user query to OpenAI Assistant
             self.client.beta.threads.messages.create(
                 thread_id=thread.id,
                 role="user",
@@ -92,77 +99,114 @@ class PDFRAG:
                 assistant_id=self.assistant.id
             )
 
-            # Get Assistant's response
+            # Retrieve the text returned by the Assistant
             messages = list(self.client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
-
             if not messages or not messages[0].content:
-                print(" No response received from Assistant.")
+                print("No response received from Assistant.")
                 continue
 
             message_content = messages[0].content[0].text
-            annotations = message_content.annotations
-            extracted_text = message_content.value  #  Extracted text for highlighting
+            extracted_text = message_content.value
 
-            # Avoid duplicate printing of extracted content
-            print(f"Assistant retrieved text from PDF:\n{extracted_text}\n")
+            # Extract PDF content and find the best paragraphs
+            paragraphs = self.extract_text_from_pdf(self.pdf_path[0])
+            best_paragraph = self.find_best_paragraph(extracted_text, paragraphs)
 
-            # Check for file citations (Assistant-retrieved PDF content)
-            for annotation in annotations:
-                if hasattr(annotation, "file_citation"):
-                    print(f" Assistant retrieved content from a file citation.")
+            if best_paragraph:
+                print(f"Best matching paragraph found:\n{best_paragraph}")
 
-            #  Highlight extracted text in PDF
-            highlight_data = self.highlight_text_in_pdf(self.pdf_path[0], extracted_text)
-
-            if highlight_data:
-                print(" Highlighted PDF saved successfully.")
-                with open("highlight_data.json", "w", encoding="utf-8") as json_file:
-                    json.dump(highlight_data, json_file, indent=4)
+                # Highlight the best paragraphs
+                highlight_data = self.highlight_text_in_pdf(self.pdf_path[0], best_paragraph)
+                if highlight_data:
+                    print(" Highlighted PDF saved successfully.")
+                    with open("highlight_data.json", "w", encoding="utf-8") as json_file:
+                        json.dump(highlight_data, json_file, indent=4)
+                else:
+                    print("No highlights were found in the document.")
             else:
-                print(" No highlights were found in the document.")
+                print("No matching paragraph found.")
+
+    def extract_text_from_pdf(self, pdf_path):
+        """
+        Extract text from PDF and split by paragraphs.
+        """
+        doc = fitz.open(pdf_path)
+        text = ""
+
+        for page in doc:
+            text += page.get_text("text") + "\n"
+
+        doc.close()
+
+        # Filter out very short paragraphs
+        paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]  
+        return paragraphs
+
+
+    def find_best_paragraph(self, query, paragraphs):
+        """
+        Finds the paragraph with the highest similarity score using TF-IDF + Cosine Similarity.
+        """
+        vectorizer = TfidfVectorizer()
+        #Compute TF-IDF vectors
+        vectors = vectorizer.fit_transform([query] + paragraphs)  
+        query_vector = vectors[0]  
+        paragraph_vectors = vectors[1:]  
+        # Compute cosine similarity 
+        scores = cosine_similarity(query_vector, paragraph_vectors).flatten() 
+        if len(scores) == 0 or max(scores) == 0:
+            return None  
+        # Get the index of the most similar paragraph
+        best_index = np.argmax(scores)  
+        return paragraphs[best_index]
 
     def highlight_text_in_pdf(self, pdf_path, text_to_highlight):
-        """Highlights entire paragraphs that contain retrieved text instead of individual words."""
+        """
+        Highlights the best-matching paragraph in the PDF using fuzzy matching.
+        """
         doc = fitz.open(pdf_path)
-        highlights = []
-    
+         # Ensure only one paragraph is highlighted
+        highlighted = False 
+
         for page_num, page in enumerate(doc):
-            text = page.get_text("text")
-            # Splitting text into paragraphs based on double newlines
-            paragraphs = text.split("\n\n")  
+            if highlighted:
+                break  
 
-            # Find the paragraph with the highest overlap
+            # Extract all words on the page
+            words = page.get_text("text").split("\n")
+            
+            # Find the closest match using fuzzy matching
             best_match = None
-            max_overlap = 0
-            for para in paragraphs:
-                overlap = len(set(text_to_highlight.split()) & set(para.split()))
-                if overlap > max_overlap:
-                    max_overlap = overlap
-                    best_match = para
+            best_score = 0
 
-            # Highlight the best matching paragraph
-            if best_match:
-                # Search for the paragraph in the page
-                instances = page.search_for(best_match.strip())  
-                for inst in instances:
-                    page.add_highlight_annot(inst)
-                    highlights.append({"page": page_num + 1, "bbox": list(inst)})
+            for word in words:
+                score = fuzz.partial_ratio(text_to_highlight, word)  
+                if score > best_score:
+                    best_score = score
+                    best_match = word
 
-        if highlights:
+            # If we find a good match (score > 80), highlight it
+            if best_match and best_score > 80:
+                instances = page.search_for(best_match)
+                if instances:
+                    for inst in instances:
+                        page.add_highlight_annot(inst)
+                        highlighted = True
+                        break  
+
+        if highlighted:
             highlighted_pdf_path = "highlighted_output.pdf"
             doc.save(highlighted_pdf_path)
             doc.close()
-            return {"highlighted_pdf": highlighted_pdf_path, "highlights": highlights}
+            return {"highlighted_pdf": highlighted_pdf_path}
         else:
             doc.close()
-            # No matching text found
-            return None  
-
-
-
+            return None
+    
+    
 if __name__ == "__main__":
     
-    pdf_path = [os.path.join(os.getcwd(),"final report.pdf")] 
+    pdf_path = [os.path.join(os.getcwd(),"specific pdf")] 
     print(pdf_path[0])
     rag = PDFRAG(pdf_path)
 
@@ -171,5 +215,4 @@ if __name__ == "__main__":
 
     response = rag.running()
     
-    rag.delete_vector_store()  
-    
+    rag.delete_vector_store() 

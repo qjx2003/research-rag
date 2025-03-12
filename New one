@@ -206,7 +206,7 @@ class PDFRAG:
     
 if __name__ == "__main__":
     
-    pdf_path = [os.path.join(os.getcwd(),"specific pdf")] 
+    pdf_path = [os.path.join(os.getcwd(),"pdf_path")] 
     print(pdf_path[0])
     rag = PDFRAG(pdf_path)
 

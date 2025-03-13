@@ -161,7 +161,7 @@ class PDFRAG:
         paragraph_vectors = vectors[1:]  
         # Compute cosine similarity 
         scores = cosine_similarity(query_vector, paragraph_vectors).flatten() 
-        if len(scores) == 0 or max(scores) == 0:
+        if len(scores) == 0 or max(scores) <0.3:
             return None  
         # Get the index of the most similar paragraph
         best_index = np.argmax(scores)  

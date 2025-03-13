@@ -15,8 +15,7 @@ from rapidfuzz import fuzz
 class PDFRAG:
     def __init__(self, pdf_path):
         """
-        Initialize OpenAI API, create a file search assistant,
-        and set up the vector store.
+        Initialize the OpenAI API, create a file search assistant, and set up vector storage.
         """
         self.key = os.getenv("OPENAI_API_KEY")
 
@@ -44,7 +43,7 @@ class PDFRAG:
 
     def upload_pdf(self):
         """
-        Upload the PDF file to the vector store and associate it with the assistant.
+        Upload the PDF file to the vector storage and associate it with the assistant.
         """
         print("Uploading PDF...")
         file_streams = [open(path, "rb") for path in self.pdf_path]
@@ -99,26 +98,34 @@ class PDFRAG:
                 assistant_id=self.assistant.id
             )
 
-            # Retrieve the text returned by the Assistant
+            # Retrieve the full text returned by the Assistant
             messages = list(self.client.beta.threads.messages.list(thread_id=thread.id, run_id=run.id))
+            
             if not messages or not messages[0].content:
                 print("No response received from Assistant.")
                 continue
 
-            message_content = messages[0].content[0].text
-            extracted_text = message_content.value
+            # Extract full response text
+            extracted_text = ""
+            for msg in messages:
+                for content in msg.content:
+                    if hasattr(content, 'text'):
+                        extracted_text += content.text.value + "\n"
 
-            # Extract PDF content and find the best paragraphs
+            # Display full response
+            print(f"Hey We get best matching paragraph found:\n{extracted_text.strip()}")
+
+            # Highlight the best paragraph
             paragraphs = self.extract_text_from_pdf(self.pdf_path[0])
             best_paragraph = self.find_best_paragraph(extracted_text, paragraphs)
 
             if best_paragraph:
                 print(f"Best matching paragraph found:\n{best_paragraph}")
 
-                # Highlight the best paragraphs
+                # Highlight the best paragraph
                 highlight_data = self.highlight_text_in_pdf(self.pdf_path[0], best_paragraph)
                 if highlight_data:
-                    print(" Highlighted PDF saved successfully.")
+                    print("Highlighted PDF saved successfully.")
                     with open("highlight_data.json", "w", encoding="utf-8") as json_file:
                         json.dump(highlight_data, json_file, indent=4)
                 else:
@@ -128,20 +135,20 @@ class PDFRAG:
 
     def extract_text_from_pdf(self, pdf_path):
         """
-        Extract text from PDF and split by paragraphs.
+        Extract text from PDF in paragraph-level blocks instead of lines.
         """
         doc = fitz.open(pdf_path)
-        text = ""
-
+        paragraphs = []
+    
         for page in doc:
-            text += page.get_text("text") + "\n"
-
+            blocks = page.get_text("blocks")  # Extract blocks of text
+            for block in blocks:
+                text = block[4].strip()
+                if len(text) > 30:  # Filter out very short lines
+                    paragraphs.append(text)
+    
         doc.close()
-
-        # Filter out very short paragraphs
-        paragraphs = [p.strip() for p in text.split("\n\n") if len(p.strip()) > 30]  
         return paragraphs
-
 
     def find_best_paragraph(self, query, paragraphs):
         """
@@ -159,60 +166,89 @@ class PDFRAG:
         # Get the index of the most similar paragraph
         best_index = np.argmax(scores)  
         return paragraphs[best_index]
-
-    def highlight_text_in_pdf(self, pdf_path, text_to_highlight):
+    
+    def highlight_text_in_pdf(self, pdf_path, text_chunk):
         """
-        Highlights the best-matching paragraph in the PDF using fuzzy matching.
+        Efficiently finds and highlights a single best-matching paragraph in the PDF.
         """
         doc = fitz.open(pdf_path)
-         # Ensure only one paragraph is highlighted
-        highlighted = False 
+        highlighted = False  # Track whether a highlight was made
 
-        for page_num, page in enumerate(doc):
+        for page in doc:
             if highlighted:
+                #stop after the first one
                 break  
 
-            # Extract all words on the page
-            words = page.get_text("text").split("\n")
-            
-            # Find the closest match using fuzzy matching
-            best_match = None
-            best_score = 0
+            # Extract text blocks and merge them into paragraphs
+            blocks = page.get_text("blocks")  
+            # Sort top-down, left-right
+            blocks = sorted(blocks, key=lambda b: (b[1], b[0]))  
 
-            for word in words:
-                score = fuzz.partial_ratio(text_to_highlight, word)  
-                if score > best_score:
-                    best_score = score
-                    best_match = word
+            paragraphs = []
+            current_paragraph = ""
+            current_rects = []
 
-            # If we find a good match (score > 80), highlight it
-            if best_match and best_score > 80:
-                instances = page.search_for(best_match)
-                if instances:
-                    for inst in instances:
-                        page.add_highlight_annot(inst)
-                        highlighted = True
-                        break  
+            for block in blocks:
+                block_text = block[4].strip()
+                if not block_text:
+                    continue  
 
+                # Merge blocks if they do NOT end in a punctuation mark (.), (!), or (?)
+                if current_paragraph and not current_paragraph.endswith(('.', '!', '?')):
+                    current_paragraph += " " + block_text
+                    current_rects.append(fitz.Rect(block[:4]))  
+                else:
+                    # Save previous paragraph and start a new one
+                    if current_paragraph:
+                        paragraphs.append((current_paragraph, current_rects))
+
+                    current_paragraph = block_text
+                    current_rects = [fitz.Rect(block[:4])]
+
+            # Add the last paragraph
+            if current_paragraph:
+                paragraphs.append((current_paragraph, current_rects))
+
+            # Find the best-matching paragraph using TF-IDF similarity
+            paragraph_texts = [p[0] for p in paragraphs]
+            if not paragraph_texts:
+                continue  
+
+            vectorizer = TfidfVectorizer()
+            vectors = vectorizer.fit_transform([text_chunk] + paragraph_texts)  
+            query_vector = vectors[0]  # Vector for the retrieved text chunk
+            paragraph_vectors = vectors[1:]  # Vectors for extracted paragraphs
+
+            scores = cosine_similarity(query_vector, paragraph_vectors).flatten()
+            best_index = np.argmax(scores) if scores.size > 0 else None
+
+            # Adjust threshold if needed
+            if best_index is not None and scores[best_index] > 0.5:  
+                best_paragraph_text, best_paragraph_rects = paragraphs[best_index]
+
+                # Highlight the best-matching paragraph
+                for rect in best_paragraph_rects:
+                    page.add_highlight_annot(rect)
+            # Stop after highlighting one paragraph
+                highlighted = True  
+
+        # Save the highlighted PDF
         if highlighted:
             highlighted_pdf_path = "highlighted_output.pdf"
             doc.save(highlighted_pdf_path)
             doc.close()
+            print(f"Highlighted PDF saved as '{highlighted_pdf_path}'")
             return {"highlighted_pdf": highlighted_pdf_path}
         else:
             doc.close()
+            print("No matching paragraph found for highlighting.")
             return None
-    
     
 if __name__ == "__main__":
     
-    pdf_path = [os.path.join(os.getcwd(),"pdf_path")] 
+    pdf_path = [os.path.join(os.getcwd(),"example.pdf")] 
     print(pdf_path[0])
     rag = PDFRAG(pdf_path)
-
-    
     rag.upload_pdf()
-
     response = rag.running()
-    
     rag.delete_vector_store() 

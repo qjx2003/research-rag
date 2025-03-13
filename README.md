@@ -37,13 +37,13 @@ python pdf_rag.py
 $env:OPENAI_API_KEY="your-api-key"
 python pdf_rag.py
 
-##Usage
+## Usage
 Upload a PDF.
 Ask a question related to the PDF.
 Retrieve and highlight the most relevant paragraph.
 View the highlighted PDF (highlighted_output.pdf).
 
-##File Structure
+## File Structure
 pdf-rag/
 │── pdf_rag.py              # Main script for PDF processing and querying
 │── example.pdf             # Sample PDF file
@@ -51,7 +51,7 @@ pdf-rag/
 │── highlight_data.json     # Stores highlight metadata
 │── README.md               # Project documentation
 
-##Future Improvements
+## Future Improvements
 Multi-page document search.
 Faster indexing for large PDFs.
 Different highlight colors for various queries.

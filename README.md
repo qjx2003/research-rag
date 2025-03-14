@@ -36,6 +36,7 @@ python pdf_rag.py
 # For Windows PowerShell:
 $env:OPENAI_API_KEY="your-api-key"
 python pdf_rag.py
+```
 
 ## Usage
 Upload a PDF.

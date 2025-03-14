@@ -39,10 +39,12 @@ python pdf_rag.py
 ```
 
 ## Usage
+```
 Upload a PDF.
 Ask a question related to the PDF.
 Retrieve and highlight the most relevant paragraph.
 View the highlighted PDF (highlighted_output.pdf).
+```
 
 ## File Structure
 ```
@@ -55,9 +57,11 @@ pdf-rag/
 ```
 
 ## Future Improvements
+```
 Multi-page document search.
 Faster indexing for large PDFs.
 Different highlight colors for various queries.
+```
 
 ## License
 This project is licensed under the MIT License.

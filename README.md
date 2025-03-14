@@ -45,12 +45,14 @@ Retrieve and highlight the most relevant paragraph.
 View the highlighted PDF (highlighted_output.pdf).
 
 ## File Structure
+```
 pdf-rag/
 │── pdf_rag.py              # Main script for PDF processing and querying
 │── example.pdf             # Sample PDF file
 │── highlighted_output.pdf  # Output with highlights
 │── highlight_data.json     # Stores highlight metadata
 │── README.md               # Project documentation
+```
 
 ## Future Improvements
 Multi-page document search.
